@@ -83,6 +83,16 @@ const ITP = (() => {
   }if(!result.length)throw Error('入力データがありません。「入力」シートの7行目から記入してください。');if(result.length>5000)throw Error('このアプリでは一度に5,000件まで扱えます。分けて変換してください。');return result;
  }
  function detect(rows,schemas){return schemas.find(s=>rows.slice(0,20).some(r=>s.fields.every((f,j)=>String(r.values[j]??'').replace(/\s/g,'')===f.name.replace(/\s/g,''))));}
+ function normalizeCompactDate(v,month,numeric,date1904,preserveHyphen=false){
+  const compact=month?/^\d{6}$/:/^\d{8}$/;
+  if(compact.test(v)){
+   const candidate=v.slice(0,4)+'/'+v.slice(4,6)+(month?'':'/'+v.slice(6,8));
+   return dateValue(candidate,month)||v; // Invalid compact input must not fall back to an Excel serial.
+  }
+  if(numeric&&v)v=excelDate(v,date1904,month)||v;
+  if(preserveHyphen&&/^\d{4}-\d{2}-\d{2}$/.test(v)&&dateValue(v))return v;
+  return dateValue(v,month)||v;
+ }
  function validateDriver(rows,schema){
   const issues=[],changes=[],output=[];
   for(const row of rows){
@@ -99,8 +109,7 @@ const ITP = (() => {
      if(f.type==='カナ')v=normalizeField(v,'driver',5);
      if(f.type.includes('ハイフン')||f.type==='日付')v=v.replace(/[‐‑‒–—―−ーｰ]/g,'-');
     }
-    if(f.type==='日付'&&v&&row.numeric?.includes(n))v=excelDate(v,row.date1904,false)||v;
-    if(f.type==='日付'&&v)v=dateValue(v)||v;
+    if(f.type==='日付'&&v)v=normalizeCompactDate(v,false,row.numeric?.includes(n),row.date1904,true);
     if([1,2,3].includes(n)&&/^\d{1,8}$/.test(v))v=v.padStart(8,'0');
     a[n-1]=v;if(v!==original)changes.push({row:row.sourceRow,name:f.name,before:original,after:v});
    }
@@ -122,6 +131,13 @@ const ITP = (() => {
     if(f.allowed&&!f.allowed.map(String).includes(v))error(n,`${f.allowed.join('、')} のいずれかで入力してください。`);
     if(n===3&&/^0+$/.test(v))error(n,'00000000は使用できません。');
    }
+   const expiry=dateValue(a[14]);
+   if(expiry){
+    for(const [n,label] of [[14,'交付年月日'],[17,'取得年月日']]){
+     const start=dateValue(a[n-1]);
+     if(start&&start>expiry)error(15,`有効期限は${label}より後の日付を入力してください。`);
+    }
+   }
    output.push(a);
   }
   return {output,issues,changes,deletes:0,moves:0};
@@ -139,8 +155,7 @@ const ITP = (() => {
     if(f.type==='数字')v=v.replace(/^ +| +$/g,'');
     if(f.type==='日付'){
      v=v.replace(/[‐‑‒–—―−ーｰ]/g,'-').replace(/^ +| +$/g,'');
-     if(v&&row.numeric?.includes(n))v=excelDate(v,row.date1904,n===15)||v;
-     if(/^\d{4}[/-]/.test(v))v=dateValue(v,n===15)||v;
+     v=normalizeCompactDate(v,n===15,row.numeric?.includes(n),row.date1904,n!==15&&/^\d{4}-\d{2}-\d{2}$/.test(original));
     }
     a[n-1]=v;if(v!==original)changes.push({row:row.sourceRow,name:f.name,before:original,after:v});
    }
@@ -157,7 +172,7 @@ const ITP = (() => {
     if(f.type==='日付'){
      const era=v.match(n===15?/^(\d{2})[/-](\d{2})$/:/^(\d{2})[/-](\d{2})[/-](\d{2})$/);
      if(era){const mo=+era[2],day=+(era[3]||1);if(+era[1]<1||mo<1||mo>12||day<1||day>new Date(Date.UTC(2000,mo,0)).getUTCDate())issue(n,'日付の月日が不正です。');else issue(n,'和暦YY形式です。元号を特定できないため、年・閏年・ITP取込結果は要確認です。値は変換しません。','warning');}
-     else if(!dateValue(v,n===15)||!(n===15?/^\d{4}\/\d{2}$/:/^\d{4}\/\d{2}\/\d{2}$/).test(v))issue(n,n===15?'実在する西暦YYYY/MMで入力してください。':'実在する西暦YYYY/MM/DDで入力してください。');
+     else if(!dateValue(v,n===15)||!(n===15?/^\d{4}\/\d{2}$/:/^\d{4}\/\d{2}\/\d{2}$/).test(dateValue(v,n===15)))issue(n,n===15?'実在する西暦YYYY/MMで入力してください。':'実在する西暦YYYY/MM/DDで入力してください。');
     }
     if([2,4,11,12].includes(n))issue(n,'アプリ上では形式チェックのみ可能です。ITP側で未登録の場合は取込エラーになります。','warning');
     if([49,50,51,52].includes(n))issue(n,'正式表の文字種・桁数を確認しました。個別の選択値・参照先は表に記載がなく、ITP側の設定は要確認です。','warning');
